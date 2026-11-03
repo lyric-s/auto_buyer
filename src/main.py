@@ -6,7 +6,6 @@ from typing import Final
 import requests
 
 import user_config
-from amazon_store import AmazonStore
 from common import (
     MSG_TELEGRAM_AVAILABLE,
     MSG_TELEGRAM_BOUGHT,
@@ -25,7 +24,8 @@ from common import (
     sleep_with_spinner,
     telegram_bot_sendtext,
 )
-from fnac_store import FnacStore
+from stores.amazon_store import AmazonStore
+from stores.fnac_store import FnacStore
 
 MODE_MANUAL: Final[str] = "manual"
 MODE_LOOP: Final[str] = "loop"

@@ -10,12 +10,13 @@
 [[watched_products]]
 url = "https://www.amazon.fr/dp/B0F2TN43GH"
 max_price = 550.00
+bought = true
 
-[[watched_products]]
-url = "https://www.amazon.fr/dp/B0HNWKLXJN"
-max_price = 550.00
+# [[watched_products]]
+# url = "https://www.amazon.fr/dp/B0HNWKLXJN"
+# max_price = 550.00
 
-[[watched_products]]
-url = "https://www.amazon.fr/dp/B0HJ89X1VQ"
-max_price = 50.00
+# [[watched_products]]
+# url = "https://www.amazon.fr/dp/B0HJ89X1VQ"
+# max_price = 50.00
 
