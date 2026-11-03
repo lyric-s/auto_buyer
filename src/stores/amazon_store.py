@@ -8,7 +8,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-import user_config
+import config_logic
 from common import (
     DEFAULT_HEADERS,
     PARSER_LXML,
@@ -166,7 +166,7 @@ class AmazonStore:
             logger.info("Submitting Amazon email address on %s", target.domain)
             email_field = email_inputs[0]
             email_field.clear()
-            email_field.send_keys(user_config.AMAZON_EMAIL)
+            email_field.send_keys(config_logic.AMAZON_EMAIL)
 
             continue_buttons = driver.find_elements(By.CSS_SELECTOR, CSS_CONTINUE_BTN)
             if continue_buttons:
@@ -186,7 +186,7 @@ class AmazonStore:
                 remember_boxes[0].click()
 
             password_field.clear()
-            password_field.send_keys(user_config.AMAZON_PASSWORD)
+            password_field.send_keys(config_logic.AMAZON_PASSWORD)
 
             signin_btn = standard_wait.until(
                 EC.element_to_be_clickable((By.CSS_SELECTOR, CSS_SIGNIN_SUBMIT))

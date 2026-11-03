@@ -6,8 +6,8 @@ import tomlkit
 from dotenv import load_dotenv
 from tomlkit.exceptions import TOMLKitError
 
-dotenv_path = Path(__file__, '.env')
-load_dotenv('.env')
+dotenv_path = Path(__file__, ".env")
+load_dotenv(".env")
 
 # Default configuration file path and environment variable name
 DEFAULT_CONFIG_FILENAME: Final[str] = "config.toml"
@@ -101,7 +101,9 @@ def mark_product_as_bought(target_url: str, config_path: Path | None = None) -> 
         return
 
 
-_CONFIG_PATH: Final[Path] = Path(os.getenv(ENV_CONFIG_PATH, DEFAULT_CONFIG_FILENAME)).resolve()
+_CONFIG_PATH: Final[Path] = Path(
+    os.getenv(ENV_CONFIG_PATH, DEFAULT_CONFIG_FILENAME)
+).resolve()
 _RAW_CONFIG: Final[dict[str, Any]] = _load_raw_toml(_CONFIG_PATH)
 
 LOGIN_URLS_BY_DOMAIN: Final[dict[str, str]] = _parse_login_urls(_RAW_CONFIG)

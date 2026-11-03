@@ -5,7 +5,7 @@ from typing import Final
 
 import requests
 
-import user_config
+import config_logic
 from common import (
     MSG_TELEGRAM_AVAILABLE,
     MSG_TELEGRAM_BOUGHT,
@@ -40,12 +40,14 @@ def build_store_registry(headless: bool) -> dict[str, StoreProvider]:
     }
 
 
-def load_targets(cli_url: str | None, cli_max_price: float | None) -> list[TargetProduct]:
+def load_targets(
+    cli_url: str | None, cli_max_price: float | None
+) -> list[TargetProduct]:
     """Build the list of validated target products from CLI arguments or user_config."""
     raw_pairs: list[tuple[str, float]] = (
         [(cli_url, cli_max_price if cli_max_price is not None else 9999.0)]
         if cli_url is not None
-        else list(user_config.WATCHED_PRODUCTS)
+        else list(config_logic.WATCHED_PRODUCTS)
     )
 
     targets: list[TargetProduct] = []
@@ -67,7 +69,9 @@ def attempt_single_target(
         if detected_price is None or detected_price > target.max_price:
             return False
 
-        logger.info("Target eligible for purchase: %s at %.2f", target.url, detected_price)
+        logger.info(
+            "Target eligible for purchase: %s at %.2f", target.url, detected_price
+        )
         telegram_bot_sendtext(
             MSG_TELEGRAM_AVAILABLE.format(
                 price=detected_price,
@@ -80,8 +84,10 @@ def attempt_single_target(
     bought = provider.purchase_product(target=target, dry_run=dry_run)
     if bought:
         if not dry_run:
-            user_config.mark_product_as_bought(target.url)
-            logger.info("Marked product as bought in configuration file: %s", target.url)
+            config_logic.mark_product_as_bought(target.url)
+            logger.info(
+                "Marked product as bought in configuration file: %s", target.url
+            )
         telegram_bot_sendtext(MSG_TELEGRAM_BOUGHT.format(url=target.url))
         return True
 
@@ -111,7 +117,9 @@ def run_application(args: argparse.Namespace) -> int:
         return 1
 
     if not targets:
-        logger.info("No active unbought products found in configuration. Nothing to monitor.")
+        logger.info(
+            "No active unbought products found in configuration. Nothing to monitor."
+        )
         return 0
 
     providers = build_store_registry(headless=args.headless)
@@ -145,7 +153,9 @@ def run_application(args: argparse.Namespace) -> int:
 
             if time.time() - last_heartbeat > HEARTBEAT_INTERVAL_SECONDS:
                 timestamp = time.ctime(int(time.time()))
-                telegram_bot_sendtext(MSG_TELEGRAM_HEARTBEAT.format(timestamp=timestamp))
+                telegram_bot_sendtext(
+                    MSG_TELEGRAM_HEARTBEAT.format(timestamp=timestamp)
+                )
                 last_heartbeat = time.time()
 
             sleep_with_spinner(

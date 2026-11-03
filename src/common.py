@@ -15,7 +15,7 @@ import requests
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 
-import user_config
+import config_logic
 
 # Shared string constants to enforce DRY across all modules
 LOGGER_NAME: Final[str] = "auto_buyer"
@@ -167,7 +167,7 @@ def price_conversion(raw_price: str) -> float | None:
 def resolve_target_product(url: str, max_price: float) -> TargetProduct:
     """Detect the store and regional login endpoint from any product URL."""
     hostname = urlparse(url).netloc.lower()
-    for domain_key, login_url in user_config.LOGIN_URLS_BY_DOMAIN.items():
+    for domain_key, login_url in config_logic.LOGIN_URLS_BY_DOMAIN.items():
         if domain_key in hostname:
             store_name = STORE_AMAZON if STORE_AMAZON in domain_key else STORE_FNAC
             return TargetProduct(
@@ -199,15 +199,15 @@ def create_firefox_driver(headless: bool = False) -> webdriver.Firefox:
 
 def telegram_bot_sendtext(bot_message: str) -> bool:
     """Send a notification message via Telegram Bot API."""
-    if not user_config.BOT_TOKEN or "REPLACE" in user_config.BOT_TOKEN:
+    if not config_logic.BOT_TOKEN or "REPLACE" in config_logic.BOT_TOKEN:
         logger.debug(
             "Telegram token not configured, skipping notification: %s", bot_message
         )
         return False
 
-    endpoint = TELEGRAM_API_TEMPLATE.format(token=user_config.BOT_TOKEN)
+    endpoint = TELEGRAM_API_TEMPLATE.format(token=config_logic.BOT_TOKEN)
     payload = {
-        "chat_id": user_config.BOT_CHAT_ID,
+        "chat_id": config_logic.BOT_CHAT_ID,
         "parse_mode": TELEGRAM_PARSE_MODE,
         "text": bot_message,
     }

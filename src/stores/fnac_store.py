@@ -8,7 +8,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-import user_config
+import config_logic
 from common import (
     DEFAULT_HEADERS,
     PARSER_LXML,
@@ -99,12 +99,12 @@ class FnacStore:
                 email_field = wait.until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, CSS_FNAC_EMAIL))
                 )
-                email_field.send_keys(user_config.FNAC_EMAIL + Keys.RETURN)
+                email_field.send_keys(config_logic.FNAC_EMAIL + Keys.RETURN)
 
                 password_field = wait.until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, CSS_FNAC_PASSWORD))
                 )
-                password_field.send_keys(user_config.FNAC_PASSWORD + Keys.RETURN)
+                password_field.send_keys(config_logic.FNAC_PASSWORD + Keys.RETURN)
 
             with loading_step(
                 "Loading Fnac product page and locating Add to Cart button"
