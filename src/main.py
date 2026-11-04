@@ -1,6 +1,7 @@
 import argparse
 import sys
 import time
+from collections.abc import Sequence
 from typing import Final
 
 import requests
@@ -14,12 +15,11 @@ from common import (
     MSG_TELEGRAM_HEARTBEAT,
     MSG_TELEGRAM_STOPPED,
     MSG_TELEGRAM_TEST,
-    STORE_AMAZON,
-    STORE_FNAC,
     StoreProvider,
     TargetProduct,
     logger,
     resolve_target_product,
+    run_interactive_login_session,
     setup_logger,
     sleep_with_spinner,
     telegram_bot_sendtext,
@@ -30,30 +30,34 @@ from stores.fnac_store import FnacStore
 MODE_MANUAL: Final[str] = "manual"
 MODE_LOOP: Final[str] = "loop"
 HEARTBEAT_INTERVAL_SECONDS: Final[float] = 3600.0
+DEFAULT_LOOP_INTERVAL_SECONDS: Final[float] = 45.0
 
 
 def build_store_registry(headless: bool) -> dict[str, StoreProvider]:
-    """Instantiate and map store providers by store identifier."""
-    return {
-        STORE_AMAZON: AmazonStore(headless=headless),
-        STORE_FNAC: FnacStore(headless=headless),
-    }
+    """Instantiate all store providers and index them dynamically by their store_name."""
+    provider_instances: tuple[StoreProvider, ...] = (
+        AmazonStore(headless=headless),
+        FnacStore(headless=headless),
+    )
+    return {provider.store_name: provider for provider in provider_instances}
 
 
 def load_targets(
-    cli_url: str | None, cli_max_price: float | None
+    cli_url: str | None,
+    cli_max_price: float | None,
+    providers: Sequence[StoreProvider],
 ) -> list[TargetProduct]:
-    """Build the list of validated target products from CLI arguments or user_config."""
+    """Build the list of validated target products from CLI arguments or config_logic."""
     raw_pairs: list[tuple[str, float]] = (
         [(cli_url, cli_max_price if cli_max_price is not None else 9999.0)]
         if cli_url is not None
         else list(config_logic.WATCHED_PRODUCTS)
     )
 
-    targets: list[TargetProduct] = []
-    for url, max_price in raw_pairs:
-        targets.append(resolve_target_product(url=url, max_price=max_price))
-    return targets
+    return [
+        resolve_target_product(url=url, max_price=max_price, providers=providers)
+        for url, max_price in raw_pairs
+    ]
 
 
 def attempt_single_target(
@@ -69,9 +73,7 @@ def attempt_single_target(
         if detected_price is None or detected_price > target.max_price:
             return False
 
-        logger.info(
-            "Target eligible for purchase: %s at %.2f", target.url, detected_price
-        )
+        logger.info("Target eligible for purchase: %s at %.2f", target.url, detected_price)
         telegram_bot_sendtext(
             MSG_TELEGRAM_AVAILABLE.format(
                 price=detected_price,
@@ -85,9 +87,7 @@ def attempt_single_target(
     if bought:
         if not dry_run:
             config_logic.mark_product_as_bought(target.url)
-            logger.info(
-                "Marked product as bought in configuration file: %s", target.url
-            )
+            logger.info("Marked product as bought in configuration file: %s", target.url)
         telegram_bot_sendtext(MSG_TELEGRAM_BOUGHT.format(url=target.url))
         return True
 
@@ -96,7 +96,7 @@ def attempt_single_target(
 
 
 def run_application(args: argparse.Namespace) -> int:
-    """Execute either a manual single pass or a continuous background monitoring loop."""
+    """Execute login setup, manual single pass, or continuous background monitoring loop."""
     setup_logger(verbose=args.verbose)
     logger.info(
         "Starting application (mode=%s, dry_run=%s, direct_buy=%s)",
@@ -110,19 +110,27 @@ def run_application(args: argparse.Namespace) -> int:
         success = telegram_bot_sendtext(MSG_TELEGRAM_TEST)
         return 0 if success else 1
 
+    providers = build_store_registry(headless=args.headless)
+
     try:
-        targets = load_targets(cli_url=args.url, cli_max_price=args.max_price)
+        targets = load_targets(
+            cli_url=args.url,
+            cli_max_price=args.max_price,
+            providers=tuple(providers.values()),
+        )
     except ValueError as exc:
         logger.error("Configuration error: %s", exc)
         return 1
 
-    if not targets:
-        logger.info(
-            "No active unbought products found in configuration. Nothing to monitor."
-        )
+    if args.login_only:
+        target_domains = [target.domain for target in targets]
+        run_interactive_login_session(domains=target_domains)
         return 0
 
-    providers = build_store_registry(headless=args.headless)
+    if not targets:
+        logger.info("No active unbought products found in configuration. Nothing to monitor.")
+        return 0
+
     pending = [True for _ in targets]
     last_heartbeat = time.time()
 
@@ -143,7 +151,6 @@ def run_application(args: argparse.Namespace) -> int:
                 if purchased:
                     pending[idx] = False
 
-            # In manual mode, stop immediately after the first pass
             if args.mode == MODE_MANUAL:
                 break
 
@@ -153,9 +160,7 @@ def run_application(args: argparse.Namespace) -> int:
 
             if time.time() - last_heartbeat > HEARTBEAT_INTERVAL_SECONDS:
                 timestamp = time.ctime(int(time.time()))
-                telegram_bot_sendtext(
-                    MSG_TELEGRAM_HEARTBEAT.format(timestamp=timestamp)
-                )
+                telegram_bot_sendtext(MSG_TELEGRAM_HEARTBEAT.format(timestamp=timestamp))
                 last_heartbeat = time.time()
 
             sleep_with_spinner(
@@ -180,6 +185,11 @@ def parse_cli_args() -> argparse.Namespace:
         choices=[MODE_MANUAL, MODE_LOOP],
         default=MODE_MANUAL,
         help="Execution mode: single manual pass or continuous background loop",
+    )
+    parser.add_argument(
+        "--login-only",
+        action="store_true",
+        help="Open Firefox with persistent profile to log into target stores manually and exit",
     )
     parser.add_argument(
         "--url",
@@ -211,8 +221,8 @@ def parse_cli_args() -> argparse.Namespace:
     parser.add_argument(
         "--interval",
         type=float,
-        default=10.0,
-        help="Delay in seconds between polling cycles in loop mode",
+        default=DEFAULT_LOOP_INTERVAL_SECONDS,
+        help="Base delay in seconds between polling cycles in loop mode (jitter applied)",
     )
     parser.add_argument(
         "--headless",

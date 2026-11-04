@@ -1,10 +1,11 @@
 import itertools
 import logging
+import random
 import re
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,20 +14,21 @@ from urllib.parse import urlparse
 
 import requests
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.firefox.options import Options
 
 import config_logic
 
-# Shared string constants to enforce DRY across all modules
 LOGGER_NAME: Final[str] = "auto_buyer"
 LOG_FORMAT: Final[str] = "%(asctime)s | %(levelname)-8s | %(message)s"
 LOG_DATE_FORMAT: Final[str] = "%Y-%m-%d %H:%M:%S"
 
-STORE_AMAZON: Final[str] = "amazon"
-STORE_FNAC: Final[str] = "fnac"
-
 PARSER_LXML: Final[str] = "lxml"
 PAGE_LOAD_EAGER: Final[str] = "eager"
+ARG_HEADLESS: Final[str] = "-headless"
+ARG_PROFILE: Final[str] = "-profile"
+FIREFOX_PROFILE_DIR: Final[str] = "firefox_profile"
+
 CARRIAGE_CLEAR: Final[str] = "\r\033[K"
 SPINNER_FRAMES: Final[tuple[str, ...]] = (
     "⠋",
@@ -53,10 +55,8 @@ MSG_TELEGRAM_AVAILABLE: Final[str] = (
     "Product available under target price ({price:.2f} <= {limit:.2f}):\n{url}"
 )
 MSG_TELEGRAM_BUYING: Final[str] = "Initiating automated checkout sequence 🔄🛒"
-MSG_TELEGRAM_BOUGHT: Final[str] = "Order successfully completed ✅🛒\n{url}"
-MSG_TELEGRAM_FAILED: Final[str] = (
-    "Automated checkout failed during browser step ❌\n{url}"
-)
+MSG_TELEGRAM_BOUGHT: Final[str] = "Order workflow completed successfully ✅🛒\n{url}"
+MSG_TELEGRAM_FAILED: Final[str] = "Automated checkout did not complete ❌\n{url}"
 MSG_TELEGRAM_HEARTBEAT: Final[str] = "Monitor is active and running ⚙️:\n🗓 {timestamp}"
 MSG_TELEGRAM_STOPPED: Final[str] = (
     "Monitor stopped because all target products were processed 🏁🚀"
@@ -65,14 +65,10 @@ MSG_TELEGRAM_TEST: Final[str] = "Telegram notification test succeeded ✅"
 
 PRICE_REGEX: Final[re.Pattern[str]] = re.compile(r"(\d+)(?:[,.€\s]\s*(\d{2}))?")
 
-ARG_HEADLESS: Final[str] = "-headless"
-ARG_PROFILE: Final[str] = "-profile"
-FIREFOX_PROFILE_DIR: Final[str] = "firefox_profile"
-
 
 @dataclass(frozen=True)
 class TargetProduct:
-    """Represents a product URL, its price ceiling, and its resolved store."""
+    """Represents a product URL, its price ceiling, and its resolved store metadata."""
 
     url: str
     max_price: float
@@ -83,6 +79,16 @@ class TargetProduct:
 
 class StoreProvider(Protocol):
     """Common interface that every store module must implement."""
+
+    @property
+    def store_name(self) -> str:
+        """Unique identifier for the store module."""
+        ...
+
+    @property
+    def supported_domains(self) -> tuple[str, ...]:
+        """Domain suffixes handled by this store provider."""
+        ...
 
     def check_stock_and_price(
         self,
@@ -106,15 +112,61 @@ class SpinnerSafeStreamHandler(logging.StreamHandler):  # type: ignore[type-arg]
         super().emit(record)
 
 
+
+# Constants to add in common.py
+JITTER_MIN_RATIO: Final[float] = 0.75
+JITTER_MAX_RATIO: Final[float] = 1.25
+LOGIN_POLL_SECONDS: Final[float] = 1.0
+SCRIPT_OPEN_TAB: Final[str] = "window.open(arguments[0], '_blank');"
+
+
+def run_interactive_login_session(domains: Sequence[str]) -> None:
+    """Open Firefox with the persistent profile so the user can log in to stores manually."""
+    unique_urls: list[str] = []
+    for domain in domains:
+        login_url = config_logic.LOGIN_URLS_BY_DOMAIN.get(domain)
+        if login_url and login_url not in unique_urls:
+            unique_urls.append(login_url)
+
+    if not unique_urls:
+        unique_urls = list(config_logic.LOGIN_URLS_BY_DOMAIN.values())
+
+    logger.info("Launching interactive Firefox session to save store cookies")
+    driver = create_firefox_driver(headless=False)
+
+    try:
+        first_url = unique_urls[0]
+        driver.get(first_url)
+        for extra_url in unique_urls[1:]:
+            driver.execute_script(SCRIPT_OPEN_TAB, extra_url)
+
+        logger.info(
+            "Log in to your store accounts in the opened tabs, then close the Firefox window."
+        )
+        with loading_step("Waiting for you to close the Firefox window"):
+            while True:
+                try:
+                    if not driver.window_handles:
+                        break
+                except WebDriverException:
+                    break
+                time.sleep(LOGIN_POLL_SECONDS)
+    finally:
+        try:
+            driver.quit()
+        except WebDriverException:
+            pass
+    logger.info("Firefox persistent profile saved successfully")
+
 def setup_logger(verbose: bool = False) -> logging.Logger:
     """Configure and return the application logger."""
-    logger = logging.getLogger(LOGGER_NAME)
-    if not logger.handlers:
+    app_logger = logging.getLogger(LOGGER_NAME)
+    if not app_logger.handlers:
         handler = SpinnerSafeStreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter(fmt=LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
-        logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG if verbose else logging.INFO)
-    return logger
+        app_logger.addHandler(handler)
+    app_logger.setLevel(logging.DEBUG if verbose else logging.INFO)
+    return app_logger
 
 
 logger = setup_logger()
@@ -144,10 +196,15 @@ def loading_step(description: str) -> Iterator[None]:
         worker.join()
 
 
-def sleep_with_spinner(seconds: float, reason: str) -> None:
-    """Pause execution with an animated spinner so the user knows the app is alive."""
-    with loading_step(reason):
-        time.sleep(seconds)
+def sleep_with_spinner(seconds: float, reason: str, apply_jitter: bool = True) -> None:
+    """Pause execution with an animated spinner and optional random jitter."""
+    effective_delay = (
+        random.uniform(seconds * JITTER_MIN_RATIO, seconds * JITTER_MAX_RATIO)
+        if apply_jitter
+        else seconds
+    )
+    with loading_step(f"{reason} ({effective_delay:.1f}s)"):
+        time.sleep(effective_delay)
 
 
 def price_conversion(raw_price: str) -> float | None:
@@ -164,20 +221,30 @@ def price_conversion(raw_price: str) -> float | None:
         return None
 
 
-def resolve_target_product(url: str, max_price: float) -> TargetProduct:
-    """Detect the store and regional login endpoint from any product URL."""
+def resolve_target_product(
+    url: str,
+    max_price: float,
+    providers: Sequence[StoreProvider],
+) -> TargetProduct:
+    """Match a product URL against registered store providers and configured login URLs."""
     hostname = urlparse(url).netloc.lower()
-    for domain_key, login_url in config_logic.LOGIN_URLS_BY_DOMAIN.items():
-        if domain_key in hostname:
-            store_name = STORE_AMAZON if STORE_AMAZON in domain_key else STORE_FNAC
-            return TargetProduct(
-                url=url,
-                max_price=max_price,
-                domain=domain_key,
-                store_name=store_name,
-                login_url=login_url,
-            )
-    msg = f"Unsupported store or regional domain in URL: {url}"
+
+    for provider in providers:
+        for domain_key in provider.supported_domains:
+            if domain_key in hostname:
+                login_url = config_logic.LOGIN_URLS_BY_DOMAIN.get(domain_key, "")
+                if not login_url:
+                    msg = f"Missing login URL in configuration for domain: {domain_key}"
+                    raise ValueError(msg)
+                return TargetProduct(
+                    url=url,
+                    max_price=max_price,
+                    domain=domain_key,
+                    store_name=provider.store_name,
+                    login_url=login_url,
+                )
+
+    msg = f"No registered store provider supports the domain in URL: {url}"
     raise ValueError(msg)
 
 
@@ -199,7 +266,7 @@ def create_firefox_driver(headless: bool = False) -> webdriver.Firefox:
 
 def telegram_bot_sendtext(bot_message: str) -> bool:
     """Send a notification message via Telegram Bot API."""
-    if not config_logic.BOT_TOKEN or "REPLACE" in config_logic.BOT_TOKEN:
+    if not config_logic.BOT_TOKEN:
         logger.debug(
             "Telegram token not configured, skipping notification: %s", bot_message
         )
